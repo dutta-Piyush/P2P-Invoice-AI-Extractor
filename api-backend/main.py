@@ -30,12 +30,32 @@ class _CidFilter(logging.Filter):
 		return True
 
 
+class _CidFormatter(logging.Formatter):
+	"""Custom formatter that provides a default value for 'cid' if missing."""
+	def format(self, record):
+		if not hasattr(record, 'cid'):
+			record.cid = _cid.get()
+		return super().format(record)
+
+
 def _configure_logging() -> None:
-	logging.basicConfig(
-		level=getattr(logging, settings.log_level.upper(), logging.INFO),
-		format="%(asctime)s | %(levelname)s | %(cid)s | %(name)s | %(message)s",
+	level = getattr(logging, settings.log_level.upper(), logging.INFO)
+	formatter = _CidFormatter(
+		"%(asctime)s | %(levelname)s | %(cid)s | %(name)s | %(message)s"
 	)
-	logging.getLogger().addFilter(_CidFilter())
+	
+	# Configure root logger
+	root_logger = logging.getLogger()
+	root_logger.setLevel(level)
+	
+	# Remove existing handlers and set up new ones with our formatter
+	for handler in root_logger.handlers[:]:
+		root_logger.removeHandler(handler)
+	
+	# Add StreamHandler with our custom formatter
+	handler = logging.StreamHandler()
+	handler.setFormatter(formatter)
+	root_logger.addHandler(handler)
 
 
 @asynccontextmanager
@@ -82,7 +102,7 @@ def create_app() -> FastAPI:
 	)
 
 	# ── Idempotency cache (in-memory, 10-minute TTL) ────────────────────
-	_idempotency_cache: dict[str, tuple[float, int, bytes, str]] = {}  # key → (ts, status, body, content_type)
+	_idempotency_cache: dict[str, tuple[float, int, bytes, str, dict]] = {}  # key → (ts, status, body, content_type, headers)
 	_IDEMPOTENCY_TTL = 600  # seconds
 
 	@app.middleware("http")
@@ -101,9 +121,9 @@ def create_app() -> FastAPI:
 
 		# Return cached response if key seen before
 		if idem_key in _idempotency_cache:
-			_, status, body, ct = _idempotency_cache[idem_key]
+			_, status, body, ct, headers = _idempotency_cache[idem_key]
 			logger.info("Idempotency cache hit for key=%s", idem_key[:16])
-			return Response(content=body, status_code=status, media_type=ct)
+			return Response(content=body, status_code=status, media_type=ct, headers=headers)
 
 		# Process and cache
 		response = await call_next(request)
@@ -111,8 +131,11 @@ def create_app() -> FastAPI:
 			body = b""
 			async for chunk in response.body_iterator:
 				body += chunk if isinstance(chunk, bytes) else chunk.encode()
-			_idempotency_cache[idem_key] = (now, response.status_code, body, response.media_type or "application/json")
-			return Response(content=body, status_code=response.status_code, media_type=response.media_type)
+			# Store headers (excluding content-length since body size changed)
+			headers_dict = dict(response.headers)
+			headers_dict.pop("content-length", None)
+			_idempotency_cache[idem_key] = (now, response.status_code, body, response.media_type or "application/json", headers_dict)
+			return Response(content=body, status_code=response.status_code, media_type=response.media_type, headers=headers_dict)
 		return response
 
 	app.include_router(extract_router)
