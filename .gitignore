@@ -15,6 +15,7 @@ procurement.db-shm
 procurement.db-wal
 
 # Uploads
+uploads/*
 uploads/*.pdf
 
 # Testing
