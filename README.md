@@ -130,7 +130,7 @@ OPENAI_API_KEY=sk-...
 Run the server:
 
 ```bash
-uvicorn main:app --reload
+uvicorn main:app --host 0.0.0.0 --port 8000
 ```
 
 Backend starts at **http://localhost:8000**. API docs at **http://localhost:8000/docs**.
@@ -150,7 +150,8 @@ python -m pytest tests/ -v
 ```bash
 cd user-interface/app
 npm install
-npm run dev
+npm run build
+npm start
 ```
 
 Frontend starts at **http://localhost:5173**.
@@ -168,3 +169,4 @@ This project is scoped as a local single-user tool per the assignment. For a mul
 - **Containerisation** — Docker / Kubernetes
 - **CI/CD** — automated pipelines with linting, test, and deploy stages
 - **Structured logging** — JSON logs shipped to ELK / Splunk
+-- Use **nginx** as a reverse proxy to route API requests to the backend and serve frontend static files efficiently.
