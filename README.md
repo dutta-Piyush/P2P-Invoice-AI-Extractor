@@ -1,164 +1,170 @@
-# Challenge 1
+# Procurement Request System
 
-Please organize, design, test, and deploy your code (locally on your machine is fine) as if it were going into production. Then send us a link to the hosted repository (e.g. Github, Bitbucket...).
+A full-stack application for creating, managing, and tracking procurement requests. Users upload a vendor offer PDF and the system auto-extracts structured fields (vendor, VAT ID, order lines, total cost, commodity group) using AI — eliminating manual data entry.
 
-## Challenge Description
+> See [ASSIGNMENT.md](api-backend/ASSIGNMENT.md) for the original challenge brief.
 
-*The askLio Team has identified the need to create and organize new requests for procurement. If users want to buy a product or service they need to create a formal request to the procurement department. That will afterwards process this request*
+## Architecture
 
-### 1. Intake
-The initial step in submitting a procurement request is the intake process. This phase is crucial as it gathers all necessary details for the procurement department to proceed. Below is a table of the required information:
+```mermaid
+graph TB
+    subgraph Frontend["Frontend — React + Vite"]
+        UI[ProcurementApp]
+        IF[IntakeForm]
+        RO[RequestOverview]
+        RD[RequestDetailModal]
+        API[api.js]
+        UI --> IF & RO
+        RO --> RD
+        IF & RO & RD --> API
+    end
 
+    subgraph Backend["Backend — FastAPI"]
+        direction TB
+        MW[Middleware<br/>CORS · Body Limit · Rate Limit · Correlation ID]
 
-| Field Name                       | Description                                                        | Example                               |
-|----------------------------------|--------------------------------------------------------------------|---------------------------------------|
-| Requestor Name                   | Full name of the person submitting the request.                    | John Doe                              |
-| Title/Short Description          | Brief name or description of the product/service requested.        | Adobe Creative Cloud Subscription     |
-| Vendor Name                      | Name of the company or individual providing the items/services.    | Adobe Systems                         |
-| Umsatzsteuer-Identifikationsnummer (VAT ID) | VAT identification number of the vendor. | DE123456789                            |
-| Commodity Group                  | The category or group the requested items/services belong to.      | Software Licenses                     |
-| Order Lines                      | List of positions from the offer, detailed as follows:             |                                       |
-|                                  | - Position Description: Description of the item/service.           | Adobe Photoshop License               |
-|                                  | - Unit Price: Price per unit/item/service.                         | 200                                   |
-|                                  | - Amount: The quantity or number of units being ordered.           | 5                                     |
-|                                  | - Unit: The unit of measure or quantity (e.g., licenses).          | licenses                              |
-|                                  | - Total Price: Total price for this line (Unit Price x Amount).    | 1000                                  |
-| Total Cost                       | Estimated total cost of the request.                               | 3000                                  |
-| Department                        | The Deparment of the Requestor                   | HR                            |
+        subgraph Routers
+            ER[extract.py<br/>POST /api/v1/extract]
+            RR[requests.py<br/>CRUD + status]
+        end
 
+        subgraph Services
+            ES[ExtractionService<br/>orchestrates upload → read → AI]
+            RS[RequestService<br/>CRUD + state machine]
+        end
 
-In the first step build the functionality to create and submit new requests.
+        subgraph AI["AI Layer"]
+            OE[OpenAIExtractor<br/>DSPy Predict · retry · circuit breaker]
+        end
 
-Feedback from user interviews has highlighted that requestors often have a vendor's offer at hand. To streamline the process, your task is to introduce an automatic extraction feature, allowing users to upload a document, which then auto-fills the request.
+        subgraph Infra
+            FV[FileValidator]
+            PR[PdfReader — PyMuPDF]
+            PS[PdfStorage]
+            DB[(SQLite — WAL mode)]
+        end
 
-*Vendor Offer*
-```
-Vendor Name: Global Tech Solutions
-Umsatzsteuer-Identifikationsnummer (VAT ID): DE987654321
-Offer Date: March 23, 2024
+        MW --> Routers
+        ER --> ES
+        RR --> RS
+        ES --> FV & PS & PR & OE
+        RS --> DB
+        PS --> DB
+    end
 
-Offered to: Creative Marketing Department
-
-Items Offered:
-1. Product: Adobe Photoshop License
-   Unit Price: €150
-   Quantity: 10
-   Total: €1500
-
-2. Product: Adobe Illustrator License
-   Unit Price: €120
-   Quantity: 5
-   Total: €600
-
-Total Offer Cost: €2100
-
-Terms and Conditions:
-Payment due within 30 days of invoice. Prices include applicable taxes.
-
+    API -- "HTTP/JSON" --> MW
 ```
 
-*Extracted Information*
+## Sequence — PDF Upload & Request Creation
+
+```mermaid
+sequenceDiagram
+    actor U as User
+    participant FE as React Frontend
+    participant BE as FastAPI Backend
+    participant V as FileValidator
+    participant S as PdfStorage
+    participant R as PdfReader
+    participant AI as OpenAIExtractor<br/>(DSPy + gpt-4o-mini)
+    participant DB as SQLite
+
+    U->>FE: Upload vendor offer PDF
+    FE->>BE: POST /api/v1/extract (multipart)
+    BE->>V: validate(content_type, size)
+    V-->>BE: OK
+    BE->>S: save_pdf(filename, bytes)
+    S-->>BE: saved_path
+    BE->>R: read_text(bytes)
+    R-->>BE: pdf_text
+    BE->>AI: extract(pdf_text)
+    Note over AI: Retry up to 4× with backoff<br/>Circuit breaker after 5 failures
+    AI-->>BE: ExtractResponse (vendor, VAT, lines, cost, commodity)
+    BE-->>FE: JSON (auto-filled form data)
+    FE-->>U: Form pre-filled — review & edit
+
+    U->>FE: Fill requestor name, title → Submit
+    FE->>BE: POST /api/v1/requests (JSON)
+    BE->>DB: INSERT request + initial status event
+    DB-->>BE: REQ-001
+    BE-->>FE: 201 Created
+    FE-->>U: "Request REQ-001 submitted"
 ```
 
-- Vendor Name: Global Tech Solutions
-- Umsatzsteuer-Identifikationsnummer (VAT ID): DE987654321
-- Requestor Department: Creative Marketing Department
-- Order Lines:
-  - Item 1:
-    - Product: Adobe Photoshop License
-    - Unit Price: €150
-    - Quantity: 10
-    - Total: €1500
-  - Item 2:
-    - Product: Adobe Illustrator License
-    - Unit Price: €120
-    - Quantity: 5
-    - Total: €600
-- Total Cost: €2100
+## Tech Stack
 
+| Layer | Technology |
+|---|---|
+| Frontend | React 19, Vite 8, vanilla CSS |
+| Backend | Python 3.12, FastAPI, Pydantic v2, SQLAlchemy ORM |
+| AI extraction | DSPy, LiteLLM, OpenAI gpt-4o-mini |
+| PDF parsing | PyMuPDF (fitz) |
+| Database | SQLite (WAL mode, foreign keys) |
+| Resilience | tenacity (retry), circuit breaker, async timeout, graceful fallback |
+| Security | slowapi rate limiting, CORS, body size limit, path validation, idempotency, API versioning (`/api/v1`) |
+| Testing | pytest (31 tests — API layer + service layer) |
+
+---
+
+## Backend Setup
+
+**Prerequisites:** Python 3.12+
+
+```bash
+cd api-backend
+python -m venv .venv
+
+# Windows
+.venv\Scripts\activate
+# macOS/Linux
+source .venv/bin/activate
+
+pip install -r requirements.txt
 ```
 
-Additionally, choosing the correct commodity group has been a challenge for users due to its complexity. A procurement manager of the customer says to you: "I don't want that the users have to select the commodity group, they always pick the wrong one, isn't there a better solution?"
+Create a `.env` file (see `.env.example`):
 
-**Key Points:**
-- Ensure every request is saved for future reference.
-- Aim to simplify the request submission process for users.
-- Ensure that only valid requests can be submitted.
+```
+OPENAI_API_KEY=sk-...
+```
 
+Run the server:
 
+```bash
+uvicorn main:app --reload
+```
 
-### 2. Request Overview
-With the capability to submit requests, the procurement department requires a system to view and manage these submissions. It's critical to track and update the status of each request (Open, In Progress, Closed) to maintain transparency within the department.
+Backend starts at **http://localhost:8000**. API docs at **http://localhost:8000/docs**.
 
-**Key Points:**
-- Implement a system to retain every status update accurately.
+Run tests:
 
+```bash
+python -m pytest tests/ -v
+```
 
-## Requirements
-- Build a program with an web-based front-end to fulfill the above requirenments of the customer
-- Choose the tech stack of your choice
-- It should be a usuable product
-- Deployment on your local machine is fine
+---
 
-## Some Final Remarks
-- We actively encourage our employees to use ChatGPT and GitHub Copilot 😉
-- Also feel free to use libraries like (LangChain, etc.) that allow you to build faster.
-- We will provide you an OpenAI api key
-- There are many ways to convince us, but most important is that the key parts are working. Evaluation will also be subject to your background (e.g. if you are no front-end developer, a misplaced button is totally fine, as long as the product is usable) 
+## Frontend Setup
 
+**Prerequisites:** Node.js 18+
 
-## Additional Information
-#### Commodity Groups
+```bash
+cd user-interface/app
+npm install
+npm run dev
+```
 
-| ID  | Category                | Commodity Group                  |
-|-----|-------------------------|-----------------------------------|
-| 001 | General Services        | Accommodation Rentals            |
-| 002 | General Services        | Membership Fees                  |
-| 003 | General Services        | Workplace Safety                 |
-| 004 | General Services        | Consulting                       |
-| 005 | General Services        | Financial Services               |
-| 006 | General Services        | Fleet Management                 |
-| 007 | General Services        | Recruitment Services             |
-| 008 | General Services        | Professional Development         |
-| 009 | General Services        | Miscellaneous Services           |
-| 010 | General Services        | Insurance                        |
-| 011 | Facility Management     | Electrical Engineering           |
-| 012 | Facility Management     | Facility Management Services     |
-| 013 | Facility Management     | Security                         |
-| 014 | Facility Management     | Renovations                      |
-| 015 | Facility Management     | Office Equipment                 |
-| 016 | Facility Management     | Energy Management                |
-| 017 | Facility Management     | Maintenance                      |
-| 018 | Facility Management     | Cafeteria and Kitchenettes       |
-| 019 | Facility Management     | Cleaning                         |
-| 020 | Publishing Production   | Audio and Visual Production      |
-| 021 | Publishing Production   | Books/Videos/CDs                 |
-| 022 | Publishing Production   | Printing Costs                   |
-| 023 | Publishing Production   | Software Development for Publishing |
-| 024 | Publishing Production   | Material Costs                   |
-| 025 | Publishing Production   | Shipping for Production          |
-| 026 | Publishing Production   | Digital Product Development      |
-| 027 | Publishing Production   | Pre-production                   |
-| 028 | Publishing Production   | Post-production Costs            |
-| 029 | Information Technology  | Hardware                         |
-| 030 | Information Technology  | IT Services                      |
-| 031 | Information Technology  | Software                         |
-| 032 | Logistics               | Courier, Express, and Postal Services |
-| 033 | Logistics               | Warehousing and Material Handling |
-| 034 | Logistics               | Transportation Logistics         |
-| 035 | Logistics               | Delivery Services                |
-| 036 | Marketing & Advertising | Advertising                      |
-| 037 | Marketing & Advertising | Outdoor Advertising              |
-| 038 | Marketing & Advertising | Marketing Agencies               |
-| 039 | Marketing & Advertising | Direct Mail                      |
-| 040 | Marketing & Advertising | Customer Communication           |
-| 041 | Marketing & Advertising | Online Marketing                 |
-| 042 | Marketing & Advertising | Events                           |
-| 043 | Marketing & Advertising | Promotional Materials            |
-| 044 | Production              | Warehouse and Operational Equipment |
-| 045 | Production              | Production Machinery             |
-| 046 | Production              | Spare Parts                      |
-| 047 | Production              | Internal Transportation          |
-| 048 | Production              | Production Materials             |
-| 049 | Production              | Consumables                      |
-| 050 | Production              | Maintenance and Repairs          |
+Frontend starts at **http://localhost:5173**.
+
+> Make sure the backend is running first — the frontend calls `http://localhost:8000/api/v1`.
+
+---
+
+## Production Considerations
+
+This project is scoped as a local single-user tool per the assignment. For a multi-user production deployment, the following would be added:
+
+- **Authentication & authorisation** — JWT-based auth with role-based access control (e.g. requestor vs. procurement manager), login/logout, and token refresh
+- **Database** — PostgreSQL (or similar) replacing SQLite
+- **Containerisation** — Docker / Kubernetes
+- **CI/CD** — automated pipelines with linting, test, and deploy stages
+- **Structured logging** — JSON logs shipped to ELK / Splunk
