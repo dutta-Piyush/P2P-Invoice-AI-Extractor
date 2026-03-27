@@ -150,8 +150,7 @@ python -m pytest tests/ -v
 ```bash
 cd user-interface/app
 npm install
-npm run build
-npm start
+npm run dev
 ```
 
 Frontend starts at **http://localhost:5173**.

@@ -15,8 +15,9 @@ procurement.db-shm
 procurement.db-wal
 
 # Uploads
-uploads/*
-uploads/*.pdf
+api-backend/uploads
+api-backend/uploads/
+api-backend/uploads/*.pdf
 
 # Testing
 .pytest_cache/

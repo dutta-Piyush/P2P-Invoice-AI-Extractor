@@ -1,6 +1,4 @@
 import logging
-from abc import ABC, abstractmethod
-
 import fitz  # PyMuPDF
 
 from core.exceptions import ExtractionError
@@ -9,14 +7,7 @@ logger = logging.getLogger(__name__)
 
 _MIN_TEXT_LENGTH = 50  # characters — below this we assume a scanned/image PDF
 
-
-class IPdfTextReader(ABC):
-    @abstractmethod
-    def read_text(self, content: bytes) -> str:
-        pass
-
-
-class PyMuPdfTextReader(IPdfTextReader):
+class PyMuPdfTextReader():
     def read_text(self, content: bytes) -> str:
         with fitz.open(stream=content, filetype="pdf") as doc:
             text = self._extract_pages(doc)

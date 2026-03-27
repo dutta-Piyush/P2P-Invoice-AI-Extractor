@@ -2,7 +2,6 @@ import logging
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
 from pathlib import Path
-
 from fastapi import HTTPException
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -20,6 +19,7 @@ logger = logging.getLogger(__name__)
 
 _UPLOAD_DIR = Path("uploads")
 
+# Define allowed status transitions for procurement requests.
 _TRANSITIONS: dict[str, frozenset[str]] = {
     "open":        frozenset({"in_progress", "cancelled", "rejected"}),
     "in_progress": frozenset({"closed", "cancelled", "rejected"}),
@@ -29,24 +29,8 @@ _TRANSITIONS: dict[str, frozenset[str]] = {
 }
 
 
-class IRequestService(ABC):
-    @abstractmethod
-    def create(self, payload: CreateRequestPayload, db: Session) -> RequestRecord: ...
-
-    @abstractmethod
-    def list_all(self, db: Session, skip: int = 0, limit: int = 50) -> list[RequestRecord]: ...
-
-    @abstractmethod
-    def get_by_id(self, request_id: str, db: Session) -> RequestRecord | None: ...
-
-    @abstractmethod
-    def update_status(self, request_id: str, new_status: RequestStatus, note: str, db: Session) -> RequestRecord | None: ...
-
-    @abstractmethod
-    def get_source_pdf_path(self, request_id: str, db: Session) -> str | None: ...
-
-
-class RequestService(IRequestService):
+# Service layer for procurement request management, handling business logic and database interactions.
+class RequestService():
 
     @staticmethod
     def _now() -> str:
@@ -54,6 +38,7 @@ class RequestService(IRequestService):
 
     @staticmethod
     def _event_to_schema(event: StatusEventORM) -> StatusEvent:
+        """Convert a StatusEventORM database model instance to a Pydantic model StatusEvent."""
         return StatusEvent(
             from_status=event.from_status,
             to_status=event.to_status,
@@ -63,6 +48,7 @@ class RequestService(IRequestService):
 
     @staticmethod
     def _orm_to_schema(record: RequestORM) -> RequestRecord:
+        """Convert a RequestORM database model instance to a Pydantic model RequestRecord."""
         return RequestRecord(
             id=record.id,
             requestor_name=record.requestor_name,
@@ -79,24 +65,27 @@ class RequestService(IRequestService):
         )
 
     @staticmethod
-    def _next_id(db: Session) -> str:
+    def _next_id(db: Session) -> int:
+        """Generate the next unique request ID as an integer (1, 2, 3, ...)."""
         counter = db.query(RequestCounterORM).filter(RequestCounterORM.id == 1).with_for_update().first()
         if counter is None:
-            max_id: str | None = db.query(func.max(RequestORM.id)).scalar()
-            seed = 0
-            if max_id:
-                try:
-                    seed = int(max_id.split("-")[1])
-                except (IndexError, ValueError):
-                    pass
+            max_id = db.query(func.max(RequestORM.id)).scalar()
+            seed = max_id or 0
             counter = RequestCounterORM(id=1, last_value=seed)
             db.add(counter)
             db.flush()
         counter.last_value += 1
         db.flush()
-        return f"REQ-{counter.last_value:03d}"
+        return counter.last_value
 
     def create(self, payload: CreateRequestPayload, db: Session) -> RequestRecord:
+        """Create a new procurement request in the database.
+        Args:
+            payload: The payload containing the request details.
+            db: The database session.
+        Returns:
+            The created RequestRecord.
+        """
         new_id = self._next_id(db)
         source_pdf = str(_UPLOAD_DIR / payload.source_pdf) if payload.source_pdf else None
         orm = RequestORM(
@@ -123,10 +112,9 @@ class RequestService(IRequestService):
         db.add(orm)
         db.flush()
         db.add(initial_event)
-
         db.refresh(orm)
         logger.info("Created request %s — '%s'", new_id, payload.title)
-        return self._orm_to_schema(orm)
+        return self._orm_to_schema(orm) # Convert the ORM model to a Pydantic model before returning.
 
     def list_all(self, db: Session, skip: int = 0, limit: int = 50) -> list[RequestRecord]:
         records = (
@@ -172,7 +160,7 @@ class RequestService(IRequestService):
             from_status=orm.status,
             to_status=new_status,
             at=self._now(),
-            note=clean_note or "Updated by user",
+            note=clean_note or "Updated by @user",
         )
         orm.status = new_status
         db.add(event)
@@ -186,7 +174,7 @@ class RequestService(IRequestService):
             new_status,
             clean_note,
         )
-        return self._orm_to_schema(orm)
+        return self._orm_to_schema(orm) # Convert the updated ORM model to a Pydantic model before returning.
 
     def get_source_pdf_path(self, request_id: str, db: Session) -> str | None:
         orm = db.query(RequestORM).filter(RequestORM.id == request_id).first()

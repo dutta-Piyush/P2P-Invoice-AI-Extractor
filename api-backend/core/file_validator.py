@@ -1,5 +1,3 @@
-from abc import ABC, abstractmethod
-
 from core.exceptions import FileTooLargeError, InvalidFileTypeError
 
 _ALLOWED_MIME_TYPES: frozenset[str] = frozenset({"application/pdf"})
@@ -7,13 +5,7 @@ _PDF_MAGIC: bytes = b"%PDF"
 _MAX_SIZE_BYTES: int = 10 * 1024 * 1024  # 10 MB
 
 
-class IFileValidator(ABC):
-    @abstractmethod
-    def validate(self, content_type: str, content: bytes) -> None:
-        pass
-
-
-class FileValidator(IFileValidator):
+class FileValidator:
     def validate(self, content_type: str, content: bytes) -> None:
         self._check_mime_type(content_type)
         self._check_size(content)

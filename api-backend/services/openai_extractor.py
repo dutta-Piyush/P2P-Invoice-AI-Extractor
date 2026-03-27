@@ -1,8 +1,8 @@
-import json
+# --- Standard and third-party imports ---
 import logging
 import os
+import json
 import time
-
 import dspy
 import litellm
 import openai
@@ -13,28 +13,28 @@ from tenacity import (
     wait_exponential,
 )
 
+# --- Project imports ---
+from core.circuit_breaker import CircuitBreaker
+from core.extraction_response_parser import ExtractionResponseParser
 from core.exceptions import AIServiceError, ExtractionError
 from models.schemas import ExtractResponse, OrderLine, _VALID_COMMODITY_IDS as _SCHEMA_COMMODITY_IDS
+# --- Commodity catalog imports ---
+from core.commodity_catalog import (
+    COMMODITY_IDS,
+    build_category_ids,
+    build_commodity_groups_text,
+    build_valid_categories_str,
+    build_id_to_name,
+    category_groups_text,
+)
 
 logger = logging.getLogger(__name__)
 
-
-_COMMODITY_GROUPS = """
-001=Accommodation Rentals, 002=Membership Fees, 003=Workplace Safety, 004=Consulting,
-005=Financial Services, 006=Fleet Management, 007=Recruitment Services, 008=Professional Development,
-009=Miscellaneous Services, 010=Insurance, 011=Electrical Engineering, 012=Facility Management Services,
-013=Security, 014=Renovations, 015=Office Equipment, 016=Energy Management, 017=Maintenance,
-018=Cafeteria and Kitchenettes, 019=Cleaning, 020=Audio and Visual Production, 021=Books/Videos/CDs,
-022=Printing Costs, 023=Software Development for Publishing, 024=Material Costs,
-025=Shipping for Production, 026=Digital Product Development, 027=Pre-production,
-028=Post-production Costs, 029=Hardware, 030=IT Services, 031=Software,
-032=Courier Express and Postal Services, 033=Warehousing and Material Handling,
-034=Transportation Logistics, 035=Delivery Services, 036=Advertising, 037=Outdoor Advertising,
-038=Marketing Agencies, 039=Direct Mail, 040=Customer Communication, 041=Online Marketing,
-042=Events, 043=Promotional Materials, 044=Warehouse and Operational Equipment,
-045=Production Machinery, 046=Spare Parts, 047=Internal Transportation, 048=Production Materials,
-049=Consumables, 050=Maintenance and Repairs
-"""
+# Build derived structures once
+_CATEGORY_IDS = build_category_ids()
+_COMMODITY_GROUPS = build_commodity_groups_text()
+_VALID_CATEGORIES_STR = build_valid_categories_str(_CATEGORY_IDS)
+_ID_TO_NAME = build_id_to_name()
 
 
 class VendorOfferSignature(dspy.Signature):
@@ -47,22 +47,35 @@ class VendorOfferSignature(dspy.Signature):
     - For order_lines_json: skip any position explicitly marked as alternative (e.g. marked with "Alt.", "Alternativ", "Alternative").
       Only include confirmed/primary line items.
     - total_cost must be the final grand total (Endsumme/total including VAT and shipping if present), not a subtotal.
-    - commodity_group_id must be exactly a 3-digit ID from this list (choose the single best match):
+    - For department: Return empty string if department name not found.
+    - For commodity_category: Check the *FULL LIST* of category and commodity group list below to understand what each category covers before taking a decision.
     """ + _COMMODITY_GROUPS
 
     pdf_text: str = dspy.InputField(desc="Raw text extracted from a vendor offer PDF")
-    vendor_name: str = dspy.OutputField(desc="Vendor company name. Return empty string if not found.")
-    vat_id: str = dspy.OutputField(desc="VAT ID (Umsatzsteuer-Identifikationsnummer), e.g. DE123456789. Return empty string if not found.")
-    department: str = dspy.OutputField(desc="Department name the offer is addressed to (e.g. HR, IT, Marketing). Return empty string if not explicitly mentioned.")
+    vendor_name: str = dspy.OutputField(desc="Vendor company name is the company name that issued the offer. Vendor cannot be Lio Technologies GmbH. Return empty string if not found.")
+    vat_id: str = dspy.OutputField(desc="VAT ID (USt-IdNr. or Umsatzsteuer-Identifikationsnummer), e.g. DE123456789. Return empty string if not found.")
+    department: str = dspy.OutputField(desc="Return empty string.")
     order_lines_json: str = dspy.OutputField(
         desc=(
-            'JSON array of order lines: [{"position_description":"...","unit_price":0.0,"amount":0.0,"unit":"...","total_price":0.0},...]. '
+            'JSON array of order lines: [{"position_description":"...","unit_price":0.0,"amount":0.0,"unit":"...","discount":0.0,"total_price":0.0},...]. '
+            'discount is a percentage (0–100) if a line-level discount is stated, otherwise 0.0. '
             'Exclude alternative positions (marked Alt., Alternativ, Alternative). '
             'Return "[]" if none found.'
         )
     )
     total_cost: str = dspy.OutputField(desc='Final grand total (Endsumme) including VAT and shipping as a decimal number (e.g. 1847.19). Return "0.0" if not found.')
-    commodity_group_id: str = dspy.OutputField(desc="3-digit commodity group ID from the provided list that best matches the items. Always return exactly one ID, e.g. '043'.")
+    item_summary: str = dspy.OutputField(desc="Brief English description of what the items/services in this offer actually are (translate from German if needed), including their purpose or use context.")
+    commodity_category: str = dspy.OutputField(desc=f"You MUST return exactly one of these category names: {_VALID_CATEGORIES_STR}. Choose the one that best matches the item_summary you just wrote. Do not invent a new category name.")
+
+
+class CommodityGroupSignature(dspy.Signature):
+    """Select the best matching commodity group ID from the provided list.
+    You MUST return one of the IDs exactly as written in category_groups. Do not invent or modify any ID."""
+
+    item_summary: str = dspy.InputField(desc="English description of the items/services in the offer.")
+    commodity_category: str = dspy.InputField(desc="The already-selected category.")
+    category_groups: str = dspy.InputField(desc="Complete list of valid commodity groups for the chosen category, in the format ID=Name. You MUST pick one ID from this list only.")
+    commodity_group_id: str = dspy.OutputField(desc="3-digit commodity group ID copied exactly from category_groups above. Return only the numeric ID, nothing else.")
 
 
 _CIRCUIT_THRESHOLD = 5
@@ -70,50 +83,48 @@ _CIRCUIT_COOLDOWN = 60.0
 _DEFAULT_MAX_INPUT_CHARS = 12_000
 
 
+
+# Main Extractor Class
 class OpenAIExtractor:
+    """Extracts structured procurement data from PDF text using OpenAI."""
     _VALID_COMMODITY_IDS: frozenset[str] = _SCHEMA_COMMODITY_IDS
     _COMMODITY_FALLBACK = "009"
 
-    def __init__(self, model: str, api_key: str, ssl_verify: bool = True, max_input_chars: int = _DEFAULT_MAX_INPUT_CHARS) -> None:
-        if not ssl_verify:
-            # WARNING: Mutates global env vars — affects ALL HTTP clients in process.
+    def __init__(self, settings) -> None:
+        # SSL and LLM setup
+        if not settings.ssl_verify:
             litellm.ssl_verify = False
             os.environ.setdefault("CURL_CA_BUNDLE", "")
             os.environ.setdefault("REQUESTS_CA_BUNDLE", "")
             logger.warning("SSL verification disabled — corporate network mode")
-        lm = dspy.LM(f"openai/{model}", api_key=api_key, temperature=0.0)
+        lm = dspy.LM(
+            f"openai/{settings.openai_model}",
+            api_key=settings.openai_api_key,
+            temperature=settings.openai_temperature,
+            top_p=settings.openai_top_p,
+        )
         dspy.configure(lm=lm)
         self._predict = dspy.Predict(VendorOfferSignature)
-        self._consecutive_failures = 0
-        self._circuit_open_until = 0.0
-        self._max_input_chars = max_input_chars
+        self._predict_group = dspy.Predict(CommodityGroupSignature)
+        self._max_input_chars = settings.max_pdf_chars
+        self._circuit = CircuitBreaker(_CIRCUIT_THRESHOLD, _CIRCUIT_COOLDOWN)
+        self._parser = ExtractionResponseParser(self._VALID_COMMODITY_IDS, self._COMMODITY_FALLBACK)
 
-    # ── Circuit breaker ──────────────────────────────────────────────────
-
-    def _is_circuit_open(self) -> bool:
-        if self._circuit_open_until > time.monotonic():
-            remaining = round(self._circuit_open_until - time.monotonic())
-            logger.warning("Circuit breaker OPEN — skipping AI call (%ds remaining)", remaining)
-            return True
-        return False
-
-    def _record_success(self) -> None:
-        self._consecutive_failures = 0
-        self._circuit_open_until = 0.0
-
-    def _record_failure(self) -> None:
-        self._consecutive_failures += 1
-        if self._consecutive_failures >= _CIRCUIT_THRESHOLD:
-            self._circuit_open_until = time.monotonic() + _CIRCUIT_COOLDOWN
-            logger.error("Circuit breaker OPENED after %d failures", self._consecutive_failures)
-
-    # ── AI call ──────────────────────────────────────────────────────────
-
+    # Truncation logic to stay within token limits and prevent excessive costs
     def _truncate(self, text: str) -> str:
         if len(text) <= self._max_input_chars:
             return text
         logger.warning("PDF text truncated from %d to %d chars", len(text), self._max_input_chars)
         return text[: self._max_input_chars]
+
+    def _validate_category(self, category: str, warnings: list[str]) -> str:
+        if category in _CATEGORY_IDS:
+            return category
+        for valid in _CATEGORY_IDS:
+            if valid.lower() == category.lower():
+                return valid
+        warnings.append(f"Category '{category}' is not valid. Defaulted to 'General Services'.")
+        return "General Services"
 
     @retry(
         stop=stop_after_attempt(4),
@@ -125,79 +136,34 @@ class OpenAIExtractor:
         return self._predict(pdf_text=pdf_text)
 
     def extract(self, pdf_text: str) -> ExtractResponse:
-        if self._is_circuit_open():
+        """Main entry: extract structured data from raw PDF text using OpenAI."""
+        if self._circuit.is_open():
             raise AIServiceError("AI service is temporarily unavailable. Please fill in the fields manually.")
 
         pdf_text = self._truncate(pdf_text)
         logger.info("Sending %d characters to OpenAI for extraction", len(pdf_text))
         try:
             result = self._call_predict(pdf_text)
-            self._record_success()
+            warnings: list[str] = []
+            category = getattr(result, "commodity_category", "").strip()
+            category = self._validate_category(category, warnings)
+            group_result = self._predict_group(
+                item_summary=result.item_summary,
+                commodity_category=category,
+                category_groups=category_groups_text(category, _CATEGORY_IDS, _ID_TO_NAME),
+            )
+            self._circuit.record_success()
         except openai.AuthenticationError as exc:
             raise AIServiceError("OpenAI API key is invalid or has been revoked.") from exc
         except openai.RateLimitError as exc:
-            self._record_failure()
+            self._circuit.record_failure()
             raise AIServiceError("OpenAI quota exhausted or rate-limited. Try again later.") from exc
         except openai.APIConnectionError as exc:
-            self._record_failure()
+            self._circuit.record_failure()
             raise AIServiceError("Could not reach the OpenAI API.") from exc
         except Exception as exc:
-            self._record_failure()
+            self._circuit.record_failure()
             raise AIServiceError(f"AI extraction failed: {exc}") from exc
 
-        return self._to_response(result)
+        return self._parser.to_response(result, group_result, category, warnings) # group_result is sending the predicted commodity group ID
 
-    # ── Response parsing ─────────────────────────────────────────────────
-
-    def _to_response(self, result) -> ExtractResponse:
-        warnings: list[str] = []
-        order_lines = self._parse_order_lines(result.order_lines_json, warnings)
-        total_cost = self._parse_float(result.total_cost)
-        cg_id = self._validate_commodity_id(result.commodity_group_id.strip(), warnings)
-        self._sanity_check(order_lines, total_cost, warnings)
-        return ExtractResponse(
-            vendor_name=result.vendor_name.strip(),
-            vat_id=result.vat_id.strip(),
-            department=result.department.strip(),
-            order_lines=order_lines,
-            total_cost=total_cost,
-            commodity_group_id=cg_id,
-            warnings=warnings,
-        )
-
-    def _validate_commodity_id(self, value: str, warnings: list[str]) -> str:
-        normalised = value.zfill(3) if value.isdigit() else value
-        if normalised in self._VALID_COMMODITY_IDS:
-            return normalised
-        warnings.append(f"Commodity group '{value}' not valid. Defaulted to {self._COMMODITY_FALLBACK}.")
-        return self._COMMODITY_FALLBACK
-
-    def _sanity_check(self, order_lines: list[OrderLine], total_cost: float, warnings: list[str]) -> None:
-        if not order_lines and total_cost > 0.0:
-            warnings.append("Order lines missing but total cost found — please review.")
-        if order_lines and total_cost == 0.0:
-            warnings.append("Line items found but total cost missing — please review.")
-
-    def _parse_order_lines(self, json_str: str, warnings: list[str]) -> list[OrderLine]:
-        if not json_str or json_str.strip() in ("[]", ""):
-            return []
-        try:
-            raw_lines = json.loads(json_str)
-        except json.JSONDecodeError:
-            warnings.append("Order lines could not be parsed — please fill them in manually.")
-            return []
-        lines: list[OrderLine] = []
-        for i, raw in enumerate(raw_lines):
-            try:
-                lines.append(OrderLine(**raw))
-            except (TypeError, ValueError, Exception):
-                warnings.append(f"Line item {i + 1} skipped due to invalid data.")
-        return lines
-
-    def _parse_float(self, value: str) -> float:
-        if not value or not value.strip():
-            return 0.0
-        try:
-            return float(value.replace(",", ".").strip())
-        except ValueError:
-            return 0.0

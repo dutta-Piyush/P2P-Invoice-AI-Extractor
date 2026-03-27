@@ -1,8 +1,6 @@
 import logging
 import uuid
 from contextlib import asynccontextmanager
-from contextvars import ContextVar
-
 import time as _time
 
 from fastapi import FastAPI, Request, Response
@@ -14,6 +12,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 from core.config import settings
 from core.limiter import limiter
+from core.logging import configure_logging, cid
 from routers.extract import router as extract_router
 from routers.requests import router as requests_router
 from models.database import create_tables, migrate_schema
@@ -21,46 +20,10 @@ import models.orm_models  # noqa: F401 — register ORM models before create_tab
 
 logger = logging.getLogger("api-backend")
 
-_cid: ContextVar[str] = ContextVar("cid", default="-")
-
-
-class _CidFilter(logging.Filter):
-	def filter(self, record):
-		record.cid = _cid.get()
-		return True
-
-
-class _CidFormatter(logging.Formatter):
-	"""Custom formatter that provides a default value for 'cid' if missing."""
-	def format(self, record):
-		if not hasattr(record, 'cid'):
-			record.cid = _cid.get()
-		return super().format(record)
-
-
-def _configure_logging() -> None:
-	level = getattr(logging, settings.log_level.upper(), logging.INFO)
-	formatter = _CidFormatter(
-		"%(asctime)s | %(levelname)s | %(cid)s | %(name)s | %(message)s"
-	)
-	
-	# Configure root logger
-	root_logger = logging.getLogger()
-	root_logger.setLevel(level)
-	
-	# Remove existing handlers and set up new ones with our formatter
-	for handler in root_logger.handlers[:]:
-		root_logger.removeHandler(handler)
-	
-	# Add StreamHandler with our custom formatter
-	handler = logging.StreamHandler()
-	handler.setFormatter(formatter)
-	root_logger.addHandler(handler)
-
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-	_configure_logging()
+	configure_logging()
 	try:
 		create_tables()
 		migrate_schema()
@@ -107,13 +70,13 @@ def create_app() -> FastAPI:
 
 	@app.middleware("http")
 	async def _idempotency_middleware(request: Request, call_next):
-		_cid.set(uuid.uuid4().hex[:8])
+		cid.set(uuid.uuid4().hex[:8])
 
 		idem_key = request.headers.get("idempotency-key")
 		if request.method != "POST" or not idem_key:
 			return await call_next(request)
 
-		# Evict expired entries
+		# Remove expired entries
 		now = _time.monotonic()
 		expired = [k for k, (ts, *_) in _idempotency_cache.items() if now - ts > _IDEMPOTENCY_TTL]
 		for k in expired:

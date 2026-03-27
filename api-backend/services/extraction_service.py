@@ -1,29 +1,19 @@
+
 import asyncio
 import logging
-from abc import ABC, abstractmethod
 from pathlib import Path
 from uuid import uuid4
 
-from core.file_validator import IFileValidator
+from core.file_validator import FileValidator
 from core.exceptions import AIServiceError, UploadError
 from models.schemas import ExtractResponse
-from services.pdf_reader import IPdfTextReader
+from services.pdf_reader import PyMuPdfTextReader
 from services.openai_extractor import OpenAIExtractor
 
 logger = logging.getLogger(__name__)
 
 
-class IPdfStorage(ABC):
-	@abstractmethod
-	def save_pdf(self, filename: str, content: bytes) -> str:
-		pass
-
-	@abstractmethod
-	def delete_pdf(self, path: str) -> None:
-		pass
-
-
-class LocalPdfStorage(IPdfStorage):
+class LocalPdfStorage:
 	def __init__(self, upload_dir: str = "uploads") -> None:
 		self._upload_dir = Path(upload_dir)
 
@@ -59,18 +49,12 @@ class LocalPdfStorage(IPdfStorage):
 			logger.warning("Could not delete PDF %s: %s", path, exc)
 
 
-class IExtractionService(ABC):
-	@abstractmethod
-	async def extract(self, filename: str, content: bytes, content_type: str) -> ExtractResponse:
-		pass
-
-
-class OpenAIExtractionService(IExtractionService):
+class PdfExtractionService:
 	def __init__(
 		self,
-		storage: IPdfStorage,
-		validator: IFileValidator,
-		reader: IPdfTextReader,
+		storage: LocalPdfStorage,
+		validator: FileValidator,
+		reader: PyMuPdfTextReader,
 		extractor: OpenAIExtractor,
 	) -> None:
 		self._storage = storage
@@ -91,10 +75,11 @@ class OpenAIExtractionService(IExtractionService):
 		)
 
 	async def extract(self, filename: str, content: bytes, content_type: str) -> ExtractResponse:
-		logger.info("Starting OpenAI extraction for: %s", filename)
+		logger.info("Starting PDF extraction for: %s", filename)
 		self._validator.validate(content_type=content_type, content=content)
 		saved_path = self._storage.save_pdf(filename=filename, content=content)
 		try:
+			# Read PDF text using PyMuPDF
 			pdf_text = self._reader.read_text(content)
 			try:
 				result = await asyncio.wait_for(
@@ -104,10 +89,10 @@ class OpenAIExtractionService(IExtractionService):
 			except asyncio.TimeoutError:
 				logger.warning("AI extraction timed out after 30s for: %s", filename)
 				result = self._empty_fallback(
-					"AI extraction timed out. Please fill in the fields manually."
+					"PDF extraction timed out. Please fill in the fields manually."
 				)
 			except AIServiceError as exc:
-				logger.warning("AI service failed for %s: %s", filename, exc)
+				logger.warning("AI extraction failed for %s: %s", filename, exc)
 				result = self._empty_fallback(str(exc))
 		except Exception:
 			# ExtractionError (scanned PDF) or UploadError — delete file and propagate

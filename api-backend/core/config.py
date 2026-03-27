@@ -21,6 +21,8 @@ class Settings:
 	allowed_origins: list[str]
 	openai_api_key: str
 	openai_model: str
+	openai_temperature: float
+	openai_top_p: float
 	ssl_verify: bool
 	max_pdf_chars: int  # input truncation budget (chars sent to OpenAI)
 
@@ -39,6 +41,8 @@ def get_settings() -> Settings:
 		allowed_origins=_parse_origins(os.getenv("ALLOWED_ORIGINS", "http://localhost:5173")),
 		openai_api_key=api_key,
 		openai_model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
+		openai_temperature=float(os.getenv("OPENAI_TEMPERATURE", "0.2")),
+		openai_top_p=float(os.getenv("OPENAI_TOP_P", "0.2")),
 		ssl_verify=os.getenv("SSL_VERIFY", "true").lower() != "false",
 		max_pdf_chars=int(os.getenv("MAX_PDF_CHARS", "12000")),
 	)

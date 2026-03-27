@@ -33,7 +33,7 @@ class Base(DeclarativeBase):
 
 def create_tables() -> None:
     Base.metadata.create_all(bind=engine)
-    logger.info("Database tables verified/created at %s", _DB_PATH)
+    logger.info("Database tables verified/created")
 
 
 # Column migrations: list of (table, column, DDL type) to ensure exist.

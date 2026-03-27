@@ -10,6 +10,7 @@ class OrderLine(BaseModel):
 	unit_price: float
 	amount: float
 	unit: str
+	discount: float = 0.0  # percentage discount (0–100)
 	total_price: float
 
 

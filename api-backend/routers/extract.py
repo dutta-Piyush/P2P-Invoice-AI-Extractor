@@ -9,9 +9,8 @@ from core.file_validator import FileValidator
 from core.limiter import limiter
 from models.schemas import ExtractResponse
 from services.extraction_service import (
-    IExtractionService,
     LocalPdfStorage,
-    OpenAIExtractionService,
+    PdfExtractionService,
 )
 from services.openai_extractor import OpenAIExtractor
 from services.pdf_reader import PyMuPdfTextReader
@@ -21,19 +20,14 @@ router = APIRouter(prefix="/api/v1", tags=["extract"])
 
 
 @lru_cache(maxsize=1)
-def get_extraction_service() -> IExtractionService:
+def get_extraction_service() -> PdfExtractionService:
     storage = LocalPdfStorage(upload_dir="uploads")
     validator = FileValidator()
-    return OpenAIExtractionService(
+    return PdfExtractionService(
         storage=storage,
         validator=validator,
         reader=PyMuPdfTextReader(),
-        extractor=OpenAIExtractor(
-            model=settings.openai_model,
-            api_key=settings.openai_api_key,
-            ssl_verify=settings.ssl_verify,
-            max_input_chars=settings.max_pdf_chars,
-        ),
+        extractor=OpenAIExtractor(settings),
     )
 
 
@@ -42,7 +36,7 @@ def get_extraction_service() -> IExtractionService:
 async def extract(
     request: Request,
     file: UploadFile = File(...),
-    extraction_service: IExtractionService = Depends(get_extraction_service),
+    extraction_service: PdfExtractionService = Depends(get_extraction_service),
 ) -> ExtractResponse:
     if not file.filename:
         raise HTTPException(status_code=400, detail="Filename is required")
@@ -58,6 +52,7 @@ async def extract(
             content_type=file.content_type or "",
         )
         logger.info("Extraction successful for file: %s", file.filename)
+        # print("Result: ", result)
         return result
     except UploadError as exc:
         logger.warning("Upload validation failed for %s: %s", file.filename, exc)

@@ -1,5 +1,7 @@
 export const fmt = (value) =>
-  new Intl.NumberFormat("de-DE", { style: "currency", currency: "EUR" }).format(value);
+  new Intl.NumberFormat("de-DE", { style: "currency", currency: "EUR" }).format(
+    value,
+  );
 
 export const emptyLine = () => ({
   id: Date.now() + Math.random(),
@@ -7,6 +9,7 @@ export const emptyLine = () => ({
   unit_price: "",
   amount: "",
   unit: "",
+  discount: "",
   total_price: "",
 });
 
@@ -75,21 +78,13 @@ export const COMMODITY_GROUPS = {
 };
 
 export function classifyCommodityGroup(form) {
-  // If the form already has an id (set from AI extraction), use it directly
+  // Use backend-provided ID if valid, else default to '009'
   if (form.commodity_group_id && COMMODITY_GROUPS[form.commodity_group_id]) {
-    return { id: form.commodity_group_id, label: COMMODITY_GROUPS[form.commodity_group_id] };
+    return {
+      id: form.commodity_group_id,
+      label: COMMODITY_GROUPS[form.commodity_group_id],
+    };
   }
-
-  // Fallback: keyword-based classification
-  const text = `${form.title || ""} ${form.vendor_name || ""} ${
-    (form.order_lines || []).map((line) => line.position_description || "").join(" ")
-  }`.toLowerCase();
-
-  if (/software|license|adobe|saas/.test(text)) return { id: "031", label: COMMODITY_GROUPS["031"] };
-  if (/hardware|laptop|monitor|printer/.test(text)) return { id: "029", label: COMMODITY_GROUPS["029"] };
-  if (/consult|advisory|professional service/.test(text)) return { id: "004", label: COMMODITY_GROUPS["004"] };
-  if (/event|marketing|campaign|advertis/.test(text)) return { id: "042", label: COMMODITY_GROUPS["042"] };
-
   return { id: "009", label: COMMODITY_GROUPS["009"] };
 }
 
@@ -111,8 +106,10 @@ export function validate(form) {
 
   form.order_lines.forEach((line, index) => {
     if (!line.position_description) errors[`line_${index}_desc`] = "Required";
-    if (!line.unit_price || line.unit_price <= 0) errors[`line_${index}_price`] = "Invalid";
-    if (!line.amount || line.amount <= 0) errors[`line_${index}_amount`] = "Invalid";
+    if (!line.unit_price || line.unit_price <= 0)
+      errors[`line_${index}_price`] = "Invalid";
+    if (!line.amount || line.amount <= 0)
+      errors[`line_${index}_amount`] = "Invalid";
   });
 
   return errors;

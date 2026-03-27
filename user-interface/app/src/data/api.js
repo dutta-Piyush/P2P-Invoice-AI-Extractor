@@ -1,6 +1,18 @@
+
 const BASE = "http://localhost:8000/api/v1";
 
-const idemKey = () => crypto.randomUUID();
+// Cache for idempotency keys: { [filename]: { key, ts } }
+const _idemKeyCache = {};
+const _IDEM_KEY_TTL = 2 * 60 * 1000; // 2 minutes in ms
+
+function getIdemKeyForFile(filename) {
+  const now = Date.now();
+  const cached = _idemKeyCache[filename];
+  if (cached && now - cached.ts < _IDEM_KEY_TTL) return cached.key;
+  const key = crypto.randomUUID();
+  _idemKeyCache[filename] = { key, ts: now };
+  return key;
+}
 
 async function parseError(res, fallback) {
   try {
@@ -17,9 +29,12 @@ export const extract = async (file) => {
   const formData = new FormData();
   formData.append("file", file);
 
+  // Use the same idempotency key for the same file name within 2 minutes
+  const idemKey = getIdemKeyForFile(file.name);
+
   const res = await fetch(`${BASE}/extract`, {
     method: "POST",
-    headers: { "Idempotency-Key": idemKey() },
+    headers: { "Idempotency-Key": idemKey },
     body: formData,
   });
 
@@ -36,7 +51,7 @@ export async function getRequests(skip = 0, limit = 50) {
 export async function createRequest(payload) {
   const res = await fetch(`${BASE}/requests`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", "Idempotency-Key": idemKey() },
+    headers: { "Content-Type": "application/json", "Idempotency-Key": crypto.randomUUID() },
     body: JSON.stringify(payload),
   });
   if (!res.ok) throw new Error(await parseError(res, "Failed to create request"));
