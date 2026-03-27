@@ -156,7 +156,7 @@ export default function IntakeForm({ onSubmit, onNotice, onError }) {
         </div>
       )}
       <section className="card">
-        <h2>Vendor offer upload (optional)</h2>
+        <h2>Vendor Offer Upload</h2>
         <div className="upload-zone" onClick={() => inputRef.current?.click()}>
           <input
             ref={inputRef}
@@ -166,9 +166,9 @@ export default function IntakeForm({ onSubmit, onNotice, onError }) {
             onChange={(e) => handleExtract(e.target.files[0])}
           />
           <div className="upload-text">
-            {extracting ? "Extracting..." : "Click to upload offer"}
+            {extracting ? "Extracting..." : "Click to upload document"}
           </div>
-          <div className="upload-sub">PDF or image</div>
+          <div className="upload-sub">PDF</div>
         </div>
       </section>
 

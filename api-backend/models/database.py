@@ -19,8 +19,8 @@ engine = create_engine(
 @event.listens_for(engine, "connect")
 def _set_sqlite_pragmas(dbapi_conn, _):
     cursor = dbapi_conn.cursor()
-    cursor.execute("PRAGMA journal_mode=WAL")
-    cursor.execute("PRAGMA foreign_keys=ON")
+    cursor.execute("PRAGMA journal_mode=WAL") # better concurrency enable Write-Ahead Logging.
+    cursor.execute("PRAGMA foreign_keys=ON") # enforce foreign key constraints
     cursor.close()
 
 
