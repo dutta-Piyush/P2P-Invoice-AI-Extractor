@@ -22,8 +22,8 @@ def _payload(**kw):
 def test_create_assigns_sequential_id(db):
     r1 = svc.create(_payload(), db)
     r2 = svc.create(_payload(), db)
-    assert r1.id == "REQ-001"
-    assert r2.id == "REQ-002"
+    assert r1.id == 1
+    assert r2.id == 2
 
 def test_create_initial_status_is_open(db):
     rec = svc.create(_payload(), db)
@@ -31,16 +31,16 @@ def test_create_initial_status_is_open(db):
 
 def test_get_by_id_returns_record(db):
     svc.create(_payload(), db)
-    assert svc.get_by_id("REQ-001", db) is not None
+    assert svc.get_by_id(1, db) is not None
 
 def test_get_by_id_missing_returns_none(db):
-    assert svc.get_by_id("REQ-999", db) is None
+    assert svc.get_by_id(999, db) is None
 
 def test_update_status_changes_status(db):
     svc.create(_payload(), db)
-    rec = svc.update_status("REQ-001", "in_progress", "Working on it", db)
+    rec = svc.update_status(1, "in_progress", "Working on it", db)
     assert rec.status == "in_progress"
-    rec = svc.update_status("REQ-001", "closed", "Done", db)
+    rec = svc.update_status(1, "closed", "Done", db)
     assert rec.status == "closed"
 
 def test_blank_title_rejected(db):
@@ -85,24 +85,24 @@ def test_invalid_transition_open_to_closed_rejected(db):
     from fastapi import HTTPException
     svc.create(_payload(), db)
     with pytest.raises(HTTPException) as exc_info:
-        svc.update_status("REQ-001", "closed", "", db)
+        svc.update_status(1, "closed", "", db)
     assert exc_info.value.status_code == 409
 
 def test_valid_transition_open_to_in_progress(db):
     svc.create(_payload(), db)
-    rec = svc.update_status("REQ-001", "in_progress", "Working", db)
+    rec = svc.update_status(1, "in_progress", "Working", db)
     assert rec.status == "in_progress"
 
 def test_valid_transition_open_to_cancelled(db):
     svc.create(_payload(), db)
-    rec = svc.update_status("REQ-001", "cancelled", "Not needed", db)
+    rec = svc.update_status(1, "cancelled", "Not needed", db)
     assert rec.status == "cancelled"
 
 def test_closed_is_terminal(db):
     from fastapi import HTTPException
     svc.create(_payload(), db)
-    svc.update_status("REQ-001", "in_progress", "WIP", db)
-    svc.update_status("REQ-001", "closed", "Done", db)
+    svc.update_status(1, "in_progress", "WIP", db)
+    svc.update_status(1, "closed", "Done", db)
     with pytest.raises(HTTPException) as exc_info:
-        svc.update_status("REQ-001", "open", "Reopen", db)
+        svc.update_status(1, "open", "Reopen", db)
     assert exc_info.value.status_code == 409

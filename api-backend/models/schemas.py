@@ -96,7 +96,7 @@ class CreateRequestPayload(BaseModel):
 
 
 class RequestRecord(BaseModel):
-	id: str
+	id: int
 	requestor_name: str
 	title: str
 	vendor_name: str
