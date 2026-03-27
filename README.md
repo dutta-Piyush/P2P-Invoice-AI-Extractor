@@ -6,48 +6,6 @@ A full-stack application for creating, managing, and tracking procurement reques
 
 ## Architecture
 
-```mermaid
-graph TB
-    subgraph UI["UI"]
-        UI[UI]
-    end
-
-    subgraph Backend["Backend — FastAPI (Detailed)"]
-        direction TB
-        MW["Middleware\nCORS · Body Limit · Rate Limit · Correlation ID"]
-
-        subgraph Routers
-            ER["extract.py\nPOST /api/v1/extract"]
-            RR["requests.py\nCRUD + status + document"]
-        end
-
-        subgraph Services
-            ES["ExtractionService\n- Orchestrates: upload → read → AI\n- Handles file validation, PDF reading, AI extraction, and storage"]
-            RS["RequestService\n- CRUD + state machine\n- Handles request lifecycle, status transitions, and DB ops"]
-        end
-
-        subgraph AI["AI Layer"]
-            OE["OpenAIExtractor\n- DSPy Predict\n- Retry logic\n- Circuit breaker"]
-        end
-
-        subgraph Infra["Infrastructure"]
-            FV["FileValidator\n- Validates file names, types, and paths"]
-            PR["PdfReader\n- Reads and parses PDFs (PyMuPDF)"]
-            PS["PdfStorage\n- Handles file storage and retrieval"]
-            DB[("SQLite\n- WAL mode\n- Stores requests, status, and files")]
-        end
-
-        MW --> Routers
-        ER --> ES
-        RR --> RS
-        ES --> FV & PS & PR & OE
-        RS --> DB
-        PS --> DB
-    end
-
-    UI -- "HTTP/JSON" --> MW
-```
-
 ## Sequence — PDF Upload & Request Creation
 
 ```mermaid
