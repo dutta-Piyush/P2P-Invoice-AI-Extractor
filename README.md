@@ -2,7 +2,7 @@
 
 A full-stack application for creating, managing, and tracking procurement requests. Users upload a vendor offer PDF and the system auto-extracts structured fields (vendor, VAT ID, order lines, total cost, commodity group) using AI — eliminating manual data entry.
 
-> See [ASSIGNMENT.md](api-backend/ASSIGNMENT.md) for the original challenge brief.
+> See [Use-Case.md](api-backend/"Use Case.md") for the original challenge brief.
 
 ## Architecture
 
