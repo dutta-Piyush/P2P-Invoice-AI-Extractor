@@ -1,8 +1,8 @@
-# Challenge 1
+## Use Case
 
 Please organize, design, test, and deploy your code (locally on your machine is fine) as if it were going into production. Then send us a link to the hosted repository (e.g. Github, Bitbucket...).
 
-## Challenge Description
+## Use Case Description
 
 *The askLio Team has identified the need to create and organize new requests for procurement. If users want to buy a product or service they need to create a formal request to the procurement department. That will afterwards process this request*
 
